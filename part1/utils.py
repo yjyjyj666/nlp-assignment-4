@@ -44,8 +44,43 @@ def custom_transform(example):
 
     # You should update example["text"] using your transformation
 
-    raise NotImplementedError
+    import hashlib
+    import re
 
+    neighbors = {
+        "a": "sqwz", "b": "vghn", "c": "xdfv",
+        "d": "serfcx", "e": "wsdr", "f": "drtgvc",
+        "g": "ftyhbv", "h": "gyujnb", "i": "ujko",
+        "j": "huikmn", "k": "jiolm", "l": "kop",
+        "m": "njk", "n": "bhjm", "o": "iklp",
+        "p": "ol", "q": "wa", "r": "edft",
+        "s": "awedxz", "t": "rfgy", "u": "yhji",
+        "v": "cfgb", "w": "qase", "x": "zsdc",
+        "y": "tghu", "z": "asx",
+    }
+
+    text = example["text"]
+    seed = int.from_bytes(
+        hashlib.sha256(text.encode("utf-8")).digest()[:8],
+        "big",
+    )
+    rng = random.Random(seed)
+
+    def introduce_typo(match):
+        word = match.group(0)
+        if len(word) < 4 or rng.random() >= 0.40:
+            return word
+
+        index = rng.randrange(1, len(word) - 1)
+        original = word[index]
+        replacement = rng.choice(neighbors[original.lower()])
+
+        if original.isupper():
+            replacement = replacement.upper()
+
+        return word[:index] + replacement + word[index + 1:]
+
+    example["text"] = re.sub(r"[A-Za-z]+", introduce_typo, text)
     ##### YOUR CODE ENDS HERE ######
 
     return example

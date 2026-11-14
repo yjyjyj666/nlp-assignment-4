@@ -27,15 +27,36 @@ class T5Dataset(Dataset):
             * Class behavior should be different on the test set.
         '''
         # TODO
+        tokenizer = T5TokenizerFast.from_pretrained("google-t5/t5-small")
+        self.decoder_start_id = tokenizer.convert_tokens_to_ids("<extra_id_0>")
+        self.examples = self.process_data(data_folder, split, tokenizer)
+
 
     def process_data(self, data_folder, split, tokenizer):
         # TODO
+        questions = load_lines(os.path.join(data_folder, f"{split}.nl"))
+        question_ids = tokenizer(questions)["input_ids"]
+
+        if split == "test":
+            return [(ids, self.decoder_start_id) for ids in question_ids]
+
+        queries = load_lines(os.path.join(data_folder, f"{split}.sql"))
+        if len(questions) != len(queries):
+            raise ValueError(f"Question and SQL counts differ in {split}")
+
+        query_ids = tokenizer(queries)["input_ids"]
+        return [
+            (input_ids, target_ids, self.decoder_start_id)
+            for input_ids, target_ids in zip(question_ids, query_ids)
+        ]
     
     def __len__(self):
         # TODO
+        return len(self.examples)
 
     def __getitem__(self, idx):
         # TODO
+        return self.examples[idx]
 
 def normal_collate_fn(batch):
     '''
@@ -54,7 +75,31 @@ def normal_collate_fn(batch):
         * initial_decoder_inputs: The very first input token to be decoder (only to be used in evaluation)
     '''
     # TODO
-    return [], [], [], [], []
+    questions, queries, start_ids = zip(*batch)
+
+    encoder_ids = pad_sequence(
+        [torch.tensor(ids, dtype=torch.long) for ids in questions],
+        batch_first=True,
+        padding_value=PAD_IDX,
+    )
+    encoder_mask = encoder_ids.ne(PAD_IDX).long()
+
+    decoder_inputs = pad_sequence(
+        [
+            torch.tensor([start_id] + ids[:-1], dtype=torch.long)
+            for ids, start_id in zip(queries, start_ids)
+        ],
+        batch_first=True,
+        padding_value=PAD_IDX,
+    )
+    decoder_targets = pad_sequence(
+        [torch.tensor(ids, dtype=torch.long) for ids in queries],
+        batch_first=True,
+        padding_value=PAD_IDX,
+    )
+    initial_decoder_inputs = torch.tensor(start_ids, dtype=torch.long).unsqueeze(1)
+
+    return encoder_ids, encoder_mask, decoder_inputs, decoder_targets, initial_decoder_inputs
 
 def test_collate_fn(batch):
     '''
@@ -70,7 +115,17 @@ def test_collate_fn(batch):
         * initial_decoder_inputs: The very first input token to be decoder (only to be used in evaluation)
     '''
     # TODO
-    return [], [], []
+    questions, start_ids = zip(*batch)
+
+    encoder_ids = pad_sequence(
+        [torch.tensor(ids, dtype=torch.long) for ids in questions],
+        batch_first=True,
+        padding_value=PAD_IDX,
+    )
+    encoder_mask = encoder_ids.ne(PAD_IDX).long()
+    initial_decoder_inputs = torch.tensor(start_ids, dtype=torch.long).unsqueeze(1)
+
+    return encoder_ids, encoder_mask, initial_decoder_inputs
 
 def get_dataloader(batch_size, split):
     data_folder = 'data'

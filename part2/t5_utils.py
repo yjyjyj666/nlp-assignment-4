@@ -20,7 +20,15 @@ def initialize_model(args):
     or training a T5 model initialized with the 'google-t5/t5-small' config
     from scratch.
     '''
-    pass
+    checkpoint = "google-t5/t5-small"
+
+    if args.finetune:
+        model = T5ForConditionalGeneration.from_pretrained(checkpoint)
+    else:
+        config = T5Config.from_pretrained(checkpoint)
+        model = T5ForConditionalGeneration(config)
+
+    return model.to(DEVICE)
 
 def mkdir(dirpath):
     if not os.path.exists(dirpath):
@@ -31,11 +39,22 @@ def mkdir(dirpath):
 
 def save_model(checkpoint_dir, model, best):
     # Save model checkpoint to be able to load the model later
-    pass
+    checkpoint_name = "best" if best else "latest"
+    path = os.path.join(checkpoint_dir, checkpoint_name)
+    model.save_pretrained(path)
 
 def load_model_from_checkpoint(args, best):
     # Load model from a checkpoint
-    pass
+    model_type = "ft" if args.finetune else "scr"
+    checkpoint_name = "best" if best else "latest"
+    path = os.path.join(
+        "checkpoints",
+        f"{model_type}_experiments",
+        args.experiment_name,
+        checkpoint_name,
+    )
+
+    return T5ForConditionalGeneration.from_pretrained(path).to(DEVICE)
 
 def initialize_optimizer_and_scheduler(args, model, epoch_length):
     optimizer = initialize_optimizer(args, model)

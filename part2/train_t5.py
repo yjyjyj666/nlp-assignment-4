@@ -8,7 +8,7 @@ import numpy as np
 import wandb
 
 from t5_utils import initialize_model, initialize_optimizer_and_scheduler, save_model, load_model_from_checkpoint, setup_wandb
-from transformers import GenerationConfig
+from transformers import T5TokenizerFast
 from load_data import load_t5_data
 from utils import compute_metrics, save_queries_and_records
 
@@ -47,6 +47,8 @@ def get_args():
     # Data hyperparameters
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--test_batch_size', type=int, default=16)
+
+    parser.add_argument("--skip_test", action="store_true")
 
     args = parser.parse_args()
     return args
@@ -127,6 +129,23 @@ def train_epoch(args, model, train_loader, optimizer, scheduler):
             total_tokens += num_tokens
 
     return total_loss / total_tokens
+
+def generate_sql_batch(model, tokenizer, encoder_input, encoder_mask, decoder_start):
+    start_id = tokenizer.convert_tokens_to_ids("<extra_id_0>")
+
+    output_ids = model.generate(
+        input_ids=encoder_input,
+        attention_mask=encoder_mask,
+        decoder_input_ids=decoder_start.to(DEVICE),
+        decoder_start_token_id=start_id,
+        max_new_tokens=512,
+    )
+
+    return [
+        query.strip().replace("\n", " ").replace("\r", " ")
+        for query in tokenizer.batch_decode(output_ids, skip_special_tokens=True)
+    ]
+@torch.no_grad()
         
 def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_path, model_record_path):
     '''
@@ -140,14 +159,68 @@ def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_pa
     '''
     # TODO
     model.eval()
-    return 0, 0, 0, 0, 0
-        
+    tokenizer = T5TokenizerFast.from_pretrained("google-t5/t5-small")
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, reduction="sum")
+
+    total_loss = 0.0
+    total_tokens = 0
+    queries = []
+
+    for encoder_input, encoder_mask, decoder_input, targets, decoder_start in tqdm(dev_loader):
+        encoder_input = encoder_input.to(DEVICE)
+        encoder_mask = encoder_mask.to(DEVICE)
+        decoder_input = decoder_input.to(DEVICE)
+        targets = targets.to(DEVICE)
+
+        logits = model(
+            input_ids=encoder_input,
+            attention_mask=encoder_mask,
+            decoder_input_ids=decoder_input,
+        ).logits
+
+        total_loss += criterion(
+            logits.reshape(-1, logits.size(-1)),
+            targets.reshape(-1),
+        ).item()
+        total_tokens += targets.ne(PAD_IDX).sum().item()
+
+        queries.extend(
+            generate_sql_batch(
+                model, tokenizer, encoder_input, encoder_mask, decoder_start
+            )
+        )
+
+    save_queries_and_records(queries, model_sql_path, model_record_path)
+    sql_em, record_em, record_f1, errors = compute_metrics(
+        gt_sql_pth, model_sql_path, gt_record_path, model_record_path
+    )
+
+    error_rate = sum(bool(error) for error in errors) / len(queries)
+    return total_loss / total_tokens, record_f1, record_em, sql_em, error_rate
+
+@torch.no_grad()
+
 def test_inference(args, model, test_loader, model_sql_path, model_record_path):
     '''
     You must implement inference to compute your model's generated SQL queries and its associated 
     database records. Implementation should be very similar to eval_epoch.
     '''
-    pass
+    model.eval()
+    tokenizer = T5TokenizerFast.from_pretrained("google-t5/t5-small")
+    queries = []
+
+    for encoder_input, encoder_mask, decoder_start in tqdm(test_loader):
+        queries.extend(
+            generate_sql_batch(
+                model,
+                tokenizer,
+                encoder_input.to(DEVICE),
+                encoder_mask.to(DEVICE),
+                decoder_start,
+            )
+        )
+
+    save_queries_and_records(queries, model_sql_path, model_record_path)
 
 def main():
     # Get key arguments
@@ -182,6 +255,9 @@ def main():
     print(f"Dev set results: {dev_error_rate*100:.2f}% of the generated outputs led to SQL errors")
 
     # Test set
+    if args.skip_test:
+        return
+    
     model_sql_path = os.path.join(f'results/t5_{model_type}_{experiment_name}_test.sql')
     model_record_path = os.path.join(f'records/t5_{model_type}_{experiment_name}_test.pkl')
     test_inference(args, model, test_loader, model_sql_path, model_record_path)
